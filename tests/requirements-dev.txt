@@ -1,0 +1,7 @@
+-r ../music_engine/requirements.txt
+-r ../backend/requirements.txt
+pytest
+pytest-asyncio
+scipy
+soundfile
+httpx

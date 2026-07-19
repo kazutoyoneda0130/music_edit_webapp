@@ -1,0 +1,18 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      SESSION_SECRET_KEY: ${SESSION_SECRET_KEY:?SESSION_SECRET_KEYを.envで設定してください（openssl rand -hex 32 等で生成）}
+      ALLOWED_EMAILS: ${ALLOWED_EMAILS:-}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:8000}
+      BACKEND_BASE_URL: ${BACKEND_BASE_URL:-http://localhost:8000}
+    volumes:
+      - storage_data:/app/backend/storage
+    restart: unless-stopped
+
+volumes:
+  storage_data:

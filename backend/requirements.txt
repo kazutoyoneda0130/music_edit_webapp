@@ -1,0 +1,8 @@
+-r ../music_engine/requirements.txt
+fastapi
+uvicorn[standard]
+python-multipart
+authlib
+itsdangerous
+pydantic-settings
+httpx
