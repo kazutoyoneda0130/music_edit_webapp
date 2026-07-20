@@ -478,3 +478,38 @@ input[type='text']:focus {
   color: var(--danger);
   font-weight: 600;
 }
+
+/* ---- パート一覧テキスト出力 ---- */
+
+.parts-export-panel {
+  margin-top: 16px;
+}
+
+.parts-export-body {
+  margin-top: 10px;
+  padding: 16px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.parts-export-text {
+  width: 100%;
+  resize: vertical;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-alt);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.parts-export-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}

@@ -3,6 +3,7 @@ import { AuthGate } from './components/AuthGate'
 import { SongPanel } from './components/SongPanel'
 import { JunctionControls } from './components/JunctionControls'
 import { TransportBar } from './components/TransportBar'
+import { PartsExportPanel } from './components/PartsExportPanel'
 import { useAuthStore } from './store/authStore'
 import { SONG_COUNT, useSongsStore } from './store/songsStore'
 import { JUNCTION_COUNT } from './store/junctionsStore'
@@ -75,6 +76,7 @@ function MainApp() {
         </div>
 
         <TransportBar songs={songs} junctions={junctions} />
+        <PartsExportPanel />
       </main>
     </div>
   )
