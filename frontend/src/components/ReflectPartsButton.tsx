@@ -26,8 +26,11 @@ function getEmbedParentOrigin(): string | null {
 
 export function ReflectPartsButton() {
   const parentOrigin = getEmbedParentOrigin()
+  // activeOrder(0)はZustandのuseStore内で呼ぶと毎回新しい配列を返してしまい、
+  // useSyncExternalStoreのスナップショット比較が不安定になって無限レンダリングループ
+  // (React error #185)を起こす。blockOrder/skippedBlocksという安定した参照だけを
+  // 購読し、フィルタ計算はレンダー本体側で行う。
   const panel = useSongsStore((s) => s.panels[0])
-  const activeOrder = useSongsStore((s) => s.activeOrder(0))
 
   if (!parentOrigin) return null
 
@@ -35,6 +38,7 @@ export function ReflectPartsButton() {
     const result = panel.result
     if (!result) return
 
+    const activeOrder = panel.blockOrder.filter((b) => !panel.skippedBlocks.includes(b))
     let cursor = 1
     const parts = activeOrder.map((blockIndex, i) => {
       const block = result.blocks[blockIndex]
