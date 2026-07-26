@@ -25,6 +25,17 @@ warnings.filterwarnings("ignore", message="librosa.core.audio.__audioread_load",
 
 DEFAULT_EIGHTS_PER_BLOCK = 4
 
+# 複数曲を繋げた「最終版音源」（他アプリで編集済みのもの含む）を1曲固定のBPM前提で
+# 解析すると全体で1つの平均BPMに丸められてしまうため、区間ごとにBPMが変わる前提で
+# 曲の境目を検出する（detect_multi_tempo_segments）。境目候補は、
+# librosa.feature.tempo(aggregate=None)が返すフレームごとのローカルBPM曲線
+# （内部でac_size秒の自己相関窓を使っており、単発の打点ノイズに強い）を、
+# 各点の前後TEMPO_WINDOW_SEC秒ずつの平均で比較し、大きく変化した点とする。
+TEMPO_WINDOW_SEC = 6.0
+MIN_SEGMENT_SEC = 15.0
+CHANGE_THRESHOLD = 0.12
+BOUNDARY_BIAS_CORRECTION_SEC = 4.0
+
 
 @dataclass
 class Block:
@@ -40,6 +51,22 @@ class AnalysisResult:
     intro_sec: float
     outro_sec: float
     blocks: list[Block]
+
+
+@dataclass
+class Segment:
+    """複数曲を繋げた音源のうち、1つの曲相当とみなされた区間（絶対秒）。"""
+
+    bpm: float
+    start_sec: float
+    end_sec: float
+    blocks: list[Block]
+
+
+@dataclass
+class MultiTempoResult:
+    duration: float
+    segments: list[Segment]
 
 
 @dataclass
@@ -64,12 +91,11 @@ def format_time(sec: float) -> str:
     return f"{minutes:02d}:{seconds:02d}"
 
 
-def detect_beats(file_path: str) -> BeatInfo:
-    # 22050Hzへダウンサンプルしてメモリを節約する変更を試したが、実際の曲でBPM・
-    # ビート位置が大きくずれる不具合が発生したため revert 済み。デスクトップ版
-    # （music_edit_app、こちらは無変更）と同じ sr=None（ネイティブレート）に戻し、
-    # メモリ対策はVM側のスペック（メモリ増強）で行う方針にした。
-    y, sr = librosa.load(file_path, sr=None)
+def detect_beats_from_signal(y: np.ndarray, sr: int) -> BeatInfo:
+    """すでにロード済みの信号(y, sr)からビートを検出する（detect_beatsの中身を
+    切り出したもの。detect_multi_tempo_segmentsが区間ごとの音声スライスに
+    対して同じロジックを使い回すために分離している。挙動はdetect_beatsと同一）。
+    """
     duration = librosa.get_duration(y=y, sr=sr)
     tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
     bpm = float(np.asarray(tempo).item())
@@ -85,6 +111,83 @@ def detect_beats(file_path: str) -> BeatInfo:
         last_beat=float(beat_times[-1]),
         beat_times=[float(t) for t in beat_times],
     )
+
+
+def detect_beats(file_path: str) -> BeatInfo:
+    # 22050Hzへダウンサンプルしてメモリを節約する変更を試したが、実際の曲でBPM・
+    # ビート位置が大きくずれる不具合が発生したため revert 済み。デスクトップ版
+    # （music_edit_app、こちらは無変更）と同じ sr=None（ネイティブレート）に戻し、
+    # メモリ対策はVM側のスペック（メモリ増強）で行う方針にした。
+    y, sr = librosa.load(file_path, sr=None)
+    return detect_beats_from_signal(y, sr)
+
+
+def _detect_tempo_change_boundaries(y: np.ndarray, sr: int, duration: float) -> list[float]:
+    """ローカルBPM曲線の急激な変化点を曲の境目候補として検出し、
+    0秒・duration秒を含む昇順の境界秒リストを返す。
+    """
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+    tempo_curve = librosa.feature.tempo(onset_envelope=onset_env, sr=sr, aggregate=None)
+    hop_length = 512
+    frame_times = librosa.frames_to_time(np.arange(len(tempo_curve)), sr=sr, hop_length=hop_length)
+
+    frame_rate = sr / hop_length
+    window = max(1, round(TEMPO_WINDOW_SEC * frame_rate))
+
+    boundaries = [0.0]
+    last_boundary = 0.0
+    for i in range(window, len(tempo_curve) - window):
+        before = tempo_curve[i - window:i]
+        after = tempo_curve[i:i + window]
+        avg_before = float(np.mean(before))
+        avg_after = float(np.mean(after))
+        if avg_before <= 0:
+            continue
+        change = abs(avg_after - avg_before) / avg_before
+        # librosa.feature.tempo(aggregate=None)はac_size秒(既定8秒)の自己相関窓を
+        # 使っているため、実際の境目より手前で変化が検出される系統的なラグが生じる。
+        # 経験的にほぼac_size/2秒分前倒しになるため、その分を補正して実際の境目に近づける。
+        t = float(frame_times[i]) + BOUNDARY_BIAS_CORRECTION_SEC
+        if change > CHANGE_THRESHOLD and t - last_boundary > MIN_SEGMENT_SEC:
+            boundaries.append(t)
+            last_boundary = t
+    boundaries.append(duration)
+    return boundaries
+
+
+def detect_multi_tempo_segments(file_path: str, eights_per_block: int = DEFAULT_EIGHTS_PER_BLOCK) -> MultiTempoResult:
+    """複数曲を繋げた「最終版音源」を、曲ごとにBPMが変わる前提で区間に分割し、
+    区間ごとに個別のBPM/ブロックを検出する。各区間は独立した音声スライスとして
+    detect_beats_from_signal + build_blocks にかけ、結果のstart_sec/end_secを
+    区間の絶対秒に戻す（build_blocks自体は1曲分析と全く同じロジックのまま）。
+    """
+    y, sr = librosa.load(file_path, sr=None)
+    duration = librosa.get_duration(y=y, sr=sr)
+    boundaries = _detect_tempo_change_boundaries(y, sr, duration)
+
+    segments: list[Segment] = []
+    for seg_start, seg_end in zip(boundaries[:-1], boundaries[1:]):
+        y_seg = y[int(seg_start * sr):int(seg_end * sr)]
+        try:
+            seg_beat_info = detect_beats_from_signal(y_seg, sr)
+        except ValueError:
+            # 無音に近い等、ビートを検出できない区間は等間隔の1ブロック扱いにする
+            fallback_bpm = 120.0
+            eights = max(1, round((seg_end - seg_start) / ((60 / fallback_bpm) * 8)))
+            segments.append(Segment(
+                bpm=fallback_bpm, start_sec=seg_start, end_sec=seg_end,
+                blocks=[Block(eights=eights, start_sec=seg_start, end_sec=seg_end)],
+            ))
+            continue
+
+        seg_result = build_blocks(seg_beat_info, eights_per_block)
+        blocks = [
+            Block(eights=b.eights, start_sec=b.start_sec + seg_start, end_sec=b.end_sec + seg_start)
+            for b in seg_result.blocks
+        ]
+        segments.append(Segment(bpm=seg_beat_info.bpm, start_sec=seg_start, end_sec=seg_end, blocks=blocks))
+
+    return MultiTempoResult(duration=duration, segments=segments)
 
 
 def build_blocks(beat_info: BeatInfo, eights_per_block: int = DEFAULT_EIGHTS_PER_BLOCK) -> AnalysisResult:

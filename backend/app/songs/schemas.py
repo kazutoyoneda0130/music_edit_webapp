@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from music_engine.analyze_bpm import AnalysisResult, BeatInfo
+from music_engine.analyze_bpm import AnalysisResult, BeatInfo, MultiTempoResult, Segment
 
 
 class BlockDTO(BaseModel):
@@ -78,3 +78,37 @@ class ConcatRequest(BaseModel):
     upload_ids: list[str]
     mode: Literal["a", "b"]
     crossfade_sec: float = 2.0
+
+
+class SegmentDTO(BaseModel):
+    bpm: float
+    start_sec: float
+    end_sec: float
+    blocks: list[BlockDTO]
+
+    @classmethod
+    def from_dataclass(cls, segment: Segment) -> "SegmentDTO":
+        return cls(
+            bpm=segment.bpm,
+            start_sec=segment.start_sec,
+            end_sec=segment.end_sec,
+            blocks=[BlockDTO(eights=b.eights, start_sec=b.start_sec, end_sec=b.end_sec) for b in segment.blocks],
+        )
+
+
+class MultiTempoResultDTO(BaseModel):
+    duration: float
+    segments: list[SegmentDTO]
+
+    @classmethod
+    def from_dataclass(cls, result: MultiTempoResult) -> "MultiTempoResultDTO":
+        return cls(
+            duration=result.duration,
+            segments=[SegmentDTO.from_dataclass(s) for s in result.segments],
+        )
+
+
+class MultiTempoUploadResponse(BaseModel):
+    upload_id: str
+    filename: str
+    result: MultiTempoResultDTO
