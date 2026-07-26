@@ -3,15 +3,19 @@
 import asyncio
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pydantic import TypeAdapter, ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from app.deps import get_current_user
 from app.ratelimit import upload_limiter
 from app.songs.schemas import (
     ConcatRequest,
+    ManualSegmentsResponse,
     RebuildBlocksRequest,
     RebuildBlocksResponse,
+    SegmentDTO,
+    SegmentRangeInput,
     UploadResponse,
 )
 from app.storage import (
@@ -22,9 +26,16 @@ from app.storage import (
     new_id,
     upload_path,
 )
-from music_engine.analyze_bpm import DEFAULT_EIGHTS_PER_BLOCK, build_blocks, detect_beats
+from music_engine.analyze_bpm import (
+    DEFAULT_EIGHTS_PER_BLOCK,
+    analyze_manual_segments,
+    build_blocks,
+    detect_beats,
+)
 from music_engine.concat_audio import concat_files
 from music_engine.audio_engine import EXPORT_FORMAT_MAP
+
+_SEGMENT_RANGES_ADAPTER = TypeAdapter(list[SegmentRangeInput])
 
 router = APIRouter(prefix="/api/songs", tags=["songs"], dependencies=[Depends(get_current_user)])
 
@@ -54,6 +65,26 @@ DETECT_BEATS_TIMEOUT_SECONDS = 120
 async def _detect_beats_with_timeout(path: str):
     try:
         return await asyncio.wait_for(run_in_threadpool(detect_beats, path), timeout=DETECT_BEATS_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError as e:
+        raise HTTPException(
+            status_code=504,
+            detail="音源の解析が時間内に終わりませんでした。時間をおいて再度お試しください。",
+        ) from e
+
+
+# 区間数分だけbeat_trackを繰り返すため、通常の1曲解析より長引きうる。
+ANALYZE_SEGMENTS_TIMEOUT_SECONDS = 150
+# ダンスナンバー1本の現実的な曲数を大きく超える数値。上限がないと大量の区間を
+# 指定されてタイムアウトまで共有VMを占有され続ける自傷的DoSになりうるため設ける。
+MAX_SEGMENTS = 50
+
+
+async def _analyze_manual_segments_with_timeout(path: str, ranges: list[tuple[float, float]], eights_per_block: int):
+    try:
+        return await asyncio.wait_for(
+            run_in_threadpool(analyze_manual_segments, path, ranges, eights_per_block),
+            timeout=ANALYZE_SEGMENTS_TIMEOUT_SECONDS,
+        )
     except asyncio.TimeoutError as e:
         raise HTTPException(
             status_code=504,
@@ -125,6 +156,69 @@ async def upload_song(file: UploadFile = File(...), user: dict = Depends(get_cur
         filename=file.filename or f"{upload_id}{suffix}",
         beat_info=beat_info_dto,
         result=result_dto,
+    )
+
+
+@router.post("/analyze-segments", response_model=ManualSegmentsResponse)
+async def analyze_segments(
+    file: UploadFile = File(...),
+    segments: str = Form(...),
+    eights_per_block: int = Form(DEFAULT_EIGHTS_PER_BLOCK, ge=1, le=64),
+    user: dict = Depends(get_current_user),
+) -> ManualSegmentsResponse:
+    """複数曲を繋げた「最終版音源」（他アプリで編集済みのもの含む）を、
+    利用者が手入力した曲ごとの開始/終了秒に従って区間ごとにBPM/ブロックを検出する。
+    境目の自動検出は精度が不十分だったため行わない。
+    """
+    upload_limiter.check(user["sub"])
+
+    try:
+        segment_inputs = _SEGMENT_RANGES_ADAPTER.validate_json(segments)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=f"区間の指定が不正です: {e}") from e
+    if not segment_inputs:
+        raise HTTPException(status_code=400, detail="区間を1つ以上指定してください")
+    if len(segment_inputs) > MAX_SEGMENTS:
+        raise HTTPException(status_code=400, detail=f"区間の数が多すぎます（{MAX_SEGMENTS}個まで）")
+
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in ALLOWED_SUFFIXES:
+        raise HTTPException(status_code=400, detail="対応していないファイル形式です（mp3, m4a, wavのみ）")
+
+    ensure_storage_dirs()
+    if not has_storage_capacity():
+        raise HTTPException(status_code=503, detail="サーバーの空き容量が不足しています。しばらくしてから再度お試しください。")
+
+    content = await _read_with_size_limit(file, MAX_UPLOAD_BYTES)
+
+    upload_id = new_id()
+    path = upload_path(upload_id, suffix)
+    path.write_bytes(content)
+
+    ranges = [(s.start_sec, s.end_sec) for s in segment_inputs]
+    try:
+        result_segments = await _analyze_manual_segments_with_timeout(str(path), ranges, eights_per_block)
+    except HTTPException:
+        path.unlink(missing_ok=True)
+        raise
+    except ValueError as e:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail="音源を解析できませんでした。ファイルが壊れているか、非対応の形式の可能性があります。") from e
+
+    total_duration = max((s.end_sec for s in result_segments), default=0.0)
+    try:
+        _check_duration(total_duration)
+    except HTTPException:
+        path.unlink(missing_ok=True)
+        raise
+
+    return ManualSegmentsResponse(
+        upload_id=upload_id,
+        filename=file.filename or f"{upload_id}{suffix}",
+        segments=[SegmentDTO.from_dataclass(s) for s in result_segments],
     )
 
 

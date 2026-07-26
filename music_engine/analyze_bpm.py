@@ -64,12 +64,11 @@ def format_time(sec: float) -> str:
     return f"{minutes:02d}:{seconds:02d}"
 
 
-def detect_beats(file_path: str) -> BeatInfo:
-    # 22050Hzへダウンサンプルしてメモリを節約する変更を試したが、実際の曲でBPM・
-    # ビート位置が大きくずれる不具合が発生したため revert 済み。デスクトップ版
-    # （music_edit_app、こちらは無変更）と同じ sr=None（ネイティブレート）に戻し、
-    # メモリ対策はVM側のスペック（メモリ増強）で行う方針にした。
-    y, sr = librosa.load(file_path, sr=None)
+def detect_beats_from_signal(y: np.ndarray, sr: int) -> BeatInfo:
+    """すでにロード済みの信号(y, sr)からビートを検出する（detect_beatsの中身を
+    切り出したもの。analyze_manual_segmentsが手入力された区間の音声スライスに
+    対して同じロジックを使い回すために分離している。挙動はdetect_beatsと同一）。
+    """
     duration = librosa.get_duration(y=y, sr=sr)
     tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
     bpm = float(np.asarray(tempo).item())
@@ -85,6 +84,15 @@ def detect_beats(file_path: str) -> BeatInfo:
         last_beat=float(beat_times[-1]),
         beat_times=[float(t) for t in beat_times],
     )
+
+
+def detect_beats(file_path: str) -> BeatInfo:
+    # 22050Hzへダウンサンプルしてメモリを節約する変更を試したが、実際の曲でBPM・
+    # ビート位置が大きくずれる不具合が発生したため revert 済み。デスクトップ版
+    # （music_edit_app、こちらは無変更）と同じ sr=None（ネイティブレート）に戻し、
+    # メモリ対策はVM側のスペック（メモリ増強）で行う方針にした。
+    y, sr = librosa.load(file_path, sr=None)
+    return detect_beats_from_signal(y, sr)
 
 
 def build_blocks(beat_info: BeatInfo, eights_per_block: int = DEFAULT_EIGHTS_PER_BLOCK) -> AnalysisResult:
@@ -123,6 +131,56 @@ def build_blocks(beat_info: BeatInfo, eights_per_block: int = DEFAULT_EIGHTS_PER
 def analyze(file_path: str, eights_per_block: int = DEFAULT_EIGHTS_PER_BLOCK) -> AnalysisResult:
     beat_info = detect_beats(file_path)
     return build_blocks(beat_info, eights_per_block)
+
+
+@dataclass
+class Segment:
+    """複数曲を繋げた「最終版音源」のうち、1曲分として手入力で指定された区間（絶対秒）。"""
+
+    bpm: float
+    start_sec: float
+    end_sec: float
+    blocks: list[Block]
+
+
+def analyze_manual_segments(
+    file_path: str,
+    segment_ranges: list[tuple[float, float]],
+    eights_per_block: int = DEFAULT_EIGHTS_PER_BLOCK,
+) -> list[Segment]:
+    """曲の境目を自動検出するのではなく、呼び出し側が指定した(start_sec, end_sec)の
+    区間ごとに、既存の1曲解析と全く同じロジック（detect_beats_from_signal +
+    build_blocks）でBPM/ブロックを検出する。境目の自動検出は精度が不十分だったため、
+    人間が指定した区間だけを信頼する設計にしている。
+    """
+    y, sr = librosa.load(file_path, sr=None)
+    duration = librosa.get_duration(y=y, sr=sr)
+
+    segments: list[Segment] = []
+    for start_sec, end_sec in segment_ranges:
+        if not (0 <= start_sec < end_sec <= duration + 0.5):
+            raise ValueError(f"区間の指定が音源の長さ（{duration:.1f}秒）と合っていません: {start_sec}〜{end_sec}")
+
+        y_seg = y[int(start_sec * sr):int(end_sec * sr)]
+        try:
+            seg_beat_info = detect_beats_from_signal(y_seg, sr)
+        except ValueError:
+            fallback_bpm = 120.0
+            eights = max(1, round((end_sec - start_sec) / ((60 / fallback_bpm) * 8)))
+            segments.append(Segment(
+                bpm=fallback_bpm, start_sec=start_sec, end_sec=end_sec,
+                blocks=[Block(eights=eights, start_sec=start_sec, end_sec=end_sec)],
+            ))
+            continue
+
+        seg_result = build_blocks(seg_beat_info, eights_per_block)
+        blocks = [
+            Block(eights=b.eights, start_sec=b.start_sec + start_sec, end_sec=b.end_sec + start_sec)
+            for b in seg_result.blocks
+        ]
+        segments.append(Segment(bpm=seg_beat_info.bpm, start_sec=start_sec, end_sec=end_sec, blocks=blocks))
+
+    return segments
 
 
 def main() -> None:

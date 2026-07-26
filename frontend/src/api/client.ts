@@ -8,8 +8,10 @@ import type {
   ExportFormat,
   ExportResponse,
   JunctionConfigDTO,
+  ManualSegmentsResponse,
   PreviewResponse,
   RebuildBlocksResponse,
+  SegmentRangeInput,
   SeekTargetDTO,
   SongSpecDTO,
   TimelineResponse,
@@ -76,6 +78,18 @@ export async function uploadSong(file: File): Promise<UploadResponse> {
   const form = new FormData()
   form.append('file', file)
   return request<UploadResponse>('/api/songs/upload', { method: 'POST', body: form })
+}
+
+export async function analyzeSegments(
+  file: File,
+  segments: SegmentRangeInput[],
+  eightsPerBlock: number,
+): Promise<ManualSegmentsResponse> {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('segments', JSON.stringify(segments))
+  form.append('eights_per_block', String(eightsPerBlock))
+  return request<ManualSegmentsResponse>('/api/songs/analyze-segments', { method: 'POST', body: form })
 }
 
 export async function rebuildBlocks(

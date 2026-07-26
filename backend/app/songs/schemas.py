@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from music_engine.analyze_bpm import AnalysisResult, BeatInfo
+from music_engine.analyze_bpm import AnalysisResult, BeatInfo, Segment
 
 
 class BlockDTO(BaseModel):
@@ -78,3 +78,32 @@ class ConcatRequest(BaseModel):
     upload_ids: list[str]
     mode: Literal["a", "b"]
     crossfade_sec: float = 2.0
+
+
+class SegmentRangeInput(BaseModel):
+    """区間指定は自動検出ではなく利用者が手入力する（自動検出は精度不足のため廃止）。"""
+
+    start_sec: float
+    end_sec: float
+
+
+class SegmentDTO(BaseModel):
+    bpm: float
+    start_sec: float
+    end_sec: float
+    blocks: list[BlockDTO]
+
+    @classmethod
+    def from_dataclass(cls, segment: Segment) -> "SegmentDTO":
+        return cls(
+            bpm=segment.bpm,
+            start_sec=segment.start_sec,
+            end_sec=segment.end_sec,
+            blocks=[BlockDTO(eights=b.eights, start_sec=b.start_sec, end_sec=b.end_sec) for b in segment.blocks],
+        )
+
+
+class ManualSegmentsResponse(BaseModel):
+    upload_id: str
+    filename: str
+    segments: list[SegmentDTO]
