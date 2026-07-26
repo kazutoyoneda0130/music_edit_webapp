@@ -4,7 +4,6 @@ import { SongPanel } from './components/SongPanel'
 import { JunctionControls } from './components/JunctionControls'
 import { TransportBar } from './components/TransportBar'
 import { PartsExportPanel } from './components/PartsExportPanel'
-import { ReflectPartsButton } from './components/ReflectPartsButton'
 import { useAuthStore } from './store/authStore'
 import { SONG_COUNT, useSongsStore } from './store/songsStore'
 import { JUNCTION_COUNT } from './store/junctionsStore'
@@ -78,7 +77,6 @@ function MainApp() {
 
         <TransportBar songs={songs} junctions={junctions} />
         <PartsExportPanel />
-        <ReflectPartsButton />
       </main>
     </div>
   )
