@@ -40,24 +40,6 @@ export interface RebuildBlocksResponse {
   result: AnalysisResultDTO
 }
 
-export interface SegmentDTO {
-  bpm: number
-  start_sec: number
-  end_sec: number
-  blocks: BlockDTO[]
-}
-
-export interface MultiTempoResultDTO {
-  duration: number
-  segments: SegmentDTO[]
-}
-
-export interface MultiTempoUploadResponse {
-  upload_id: string
-  filename: string
-  result: MultiTempoResultDTO
-}
-
 export type ConcatMode = 'a' | 'b'
 
 export type FadePattern = 'linear' | 'equal_power' | 'scurve'

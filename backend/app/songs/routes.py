@@ -3,15 +3,13 @@
 import asyncio
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 
 from app.deps import get_current_user
 from app.ratelimit import upload_limiter
 from app.songs.schemas import (
     ConcatRequest,
-    MultiTempoResultDTO,
-    MultiTempoUploadResponse,
     RebuildBlocksRequest,
     RebuildBlocksResponse,
     UploadResponse,
@@ -24,12 +22,7 @@ from app.storage import (
     new_id,
     upload_path,
 )
-from music_engine.analyze_bpm import (
-    DEFAULT_EIGHTS_PER_BLOCK,
-    build_blocks,
-    detect_beats,
-    detect_multi_tempo_segments,
-)
+from music_engine.analyze_bpm import DEFAULT_EIGHTS_PER_BLOCK, build_blocks, detect_beats
 from music_engine.concat_audio import concat_files
 from music_engine.audio_engine import EXPORT_FORMAT_MAP
 
@@ -61,23 +54,6 @@ DETECT_BEATS_TIMEOUT_SECONDS = 120
 async def _detect_beats_with_timeout(path: str):
     try:
         return await asyncio.wait_for(run_in_threadpool(detect_beats, path), timeout=DETECT_BEATS_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError as e:
-        raise HTTPException(
-            status_code=504,
-            detail="音源の解析が時間内に終わりませんでした。時間をおいて再度お試しください。",
-        ) from e
-
-
-# 区間ごとのビート再検出を挟む分、通常の1曲解析より重いため通常のタイムアウトより長めに取る
-DETECT_MULTI_TEMPO_TIMEOUT_SECONDS = 180
-
-
-async def _detect_multi_tempo_with_timeout(path: str, eights_per_block: int):
-    try:
-        return await asyncio.wait_for(
-            run_in_threadpool(detect_multi_tempo_segments, path, eights_per_block),
-            timeout=DETECT_MULTI_TEMPO_TIMEOUT_SECONDS,
-        )
     except asyncio.TimeoutError as e:
         raise HTTPException(
             status_code=504,
@@ -149,54 +125,6 @@ async def upload_song(file: UploadFile = File(...), user: dict = Depends(get_cur
         filename=file.filename or f"{upload_id}{suffix}",
         beat_info=beat_info_dto,
         result=result_dto,
-    )
-
-
-@router.post("/analyze-multi-tempo", response_model=MultiTempoUploadResponse)
-async def analyze_multi_tempo(
-    file: UploadFile = File(...),
-    eights_per_block: int = Form(DEFAULT_EIGHTS_PER_BLOCK, ge=1, le=64),
-    user: dict = Depends(get_current_user),
-) -> MultiTempoUploadResponse:
-    """複数曲を繋げた「最終版音源」（他アプリで編集済みのもの含む）を、
-    曲ごとにBPMが変わる前提で区間検出する。通常の/uploadと違い、
-    全体を1つのBPMとして扱わない。
-    """
-    upload_limiter.check(user["sub"])
-
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in ALLOWED_SUFFIXES:
-        raise HTTPException(status_code=400, detail="対応していないファイル形式です（mp3, m4a, wavのみ）")
-
-    ensure_storage_dirs()
-    if not has_storage_capacity():
-        raise HTTPException(status_code=503, detail="サーバーの空き容量が不足しています。しばらくしてから再度お試しください。")
-
-    content = await _read_with_size_limit(file, MAX_UPLOAD_BYTES)
-
-    upload_id = new_id()
-    path = upload_path(upload_id, suffix)
-    path.write_bytes(content)
-
-    try:
-        result = await _detect_multi_tempo_with_timeout(str(path), eights_per_block)
-    except HTTPException:
-        path.unlink(missing_ok=True)
-        raise
-    except Exception as e:
-        path.unlink(missing_ok=True)
-        raise HTTPException(status_code=422, detail="音源を解析できませんでした。ファイルが壊れているか、非対応の形式の可能性があります。") from e
-
-    try:
-        _check_duration(result.duration)
-    except HTTPException:
-        path.unlink(missing_ok=True)
-        raise
-
-    return MultiTempoUploadResponse(
-        upload_id=upload_id,
-        filename=file.filename or f"{upload_id}{suffix}",
-        result=MultiTempoResultDTO.from_dataclass(result),
     )
 
 

@@ -8,7 +8,6 @@ import type {
   ExportFormat,
   ExportResponse,
   JunctionConfigDTO,
-  MultiTempoUploadResponse,
   PreviewResponse,
   RebuildBlocksResponse,
   SeekTargetDTO,
@@ -77,13 +76,6 @@ export async function uploadSong(file: File): Promise<UploadResponse> {
   const form = new FormData()
   form.append('file', file)
   return request<UploadResponse>('/api/songs/upload', { method: 'POST', body: form })
-}
-
-export async function analyzeMultiTempo(file: File, eightsPerBlock: number): Promise<MultiTempoUploadResponse> {
-  const form = new FormData()
-  form.append('file', file)
-  form.append('eights_per_block', String(eightsPerBlock))
-  return request<MultiTempoUploadResponse>('/api/songs/analyze-multi-tempo', { method: 'POST', body: form })
 }
 
 export async function rebuildBlocks(

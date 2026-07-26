@@ -513,9 +513,3 @@ input[type='text']:focus {
   gap: 12px;
   margin-top: 10px;
 }
-
-/* ---- 最終音源の音割り解析 ---- */
-
-.multi-tempo-panel {
-  margin-top: 20px;
-}
